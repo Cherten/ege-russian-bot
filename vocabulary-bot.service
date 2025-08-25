@@ -1,0 +1,18 @@
+[Unit]
+Description=Vocabulary Learning Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=bot
+Group=bot
+WorkingDirectory=/home/bot/vocabulary-bot
+Environment=PATH=/home/bot/vocabulary-bot/venv/bin
+ExecStart=/home/bot/vocabulary-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target 

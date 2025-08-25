@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  vocabulary-bot:
+    build: .
+    container_name: vocabulary_bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - DATABASE_URL=sqlite+aiosqlite:///./data/vocabulary_bot.db
+      - NOTIFICATION_HOURS=${NOTIFICATION_HOURS:-9,13,18}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import asyncio; asyncio.run(bot.get_me())'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  bot_data:
+    driver: local 
