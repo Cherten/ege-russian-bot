@@ -442,7 +442,7 @@ async def get_user_statistics():
             "📊 <b>Статистика пользователей:</b>\n\n"
             "💡 <i>Слово считается выученным после:</i>\n"
             "   • <i>Прохождения всех 7 интервалов повторения ИЛИ</i>\n"
-            "   • <i>10 правильных ответов в тренировках</i>\n\n"
+            "   • <i>5 правильных ответов в тренировках</i>\n\n"
         )
         
         # Получаем всех пользователей
@@ -471,10 +471,10 @@ async def get_user_statistics():
             learned_words_result = await session.execute(learned_words_query)
             learned_words = learned_words_result.scalar()
             
-            # Подсчитываем слова близкие к изучению (7+ правильных ответов, но не выучены)
+            # Подсчитываем слова близкие к изучению (3+ правильных ответов, но не выучены)
             almost_learned_query = select(func.count(UserWord.id)).where(
                 UserWord.user_id == user.id,
-                UserWord.correct_answers_count >= 7,
+                UserWord.correct_answers_count >= 3,
                 UserWord.is_learned == False
             )
             almost_learned_result = await session.execute(almost_learned_query)

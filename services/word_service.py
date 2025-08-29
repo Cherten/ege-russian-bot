@@ -228,22 +228,30 @@ class WordService:
         return True
     
     @staticmethod
-    async def get_training_words(session: Session, user_id: int) -> List[Word]:
+    async def get_training_words(session: Session, user_id: int, word_count: int = None) -> List[Word]:
         """
         Получает слова для тренировки (новые слова + слова для повторения)
+        
+        Args:
+            session: сессия базы данных
+            user_id: ID пользователя
+            word_count: количество слов для тренировки (по умолчанию из config)
         """
+        if word_count is None:
+            word_count = WORDS_PER_TRAINING
+            
         # Получаем слова для повторения из личного словаря
         repetition_words_query = select(Word).join(UserWord).where(
             UserWord.user_id == user_id,
             UserWord.next_repetition <= func.now(),
             UserWord.is_learned == False
-        ).limit(WORDS_PER_TRAINING // 2)
+        ).limit(word_count // 2)
         
         repetition_words = await session.execute(repetition_words_query)
         repetition_words = repetition_words.scalars().all()
         
         # Если слов для повторения мало, добавляем новые слова
-        remaining_slots = WORDS_PER_TRAINING - len(repetition_words)
+        remaining_slots = word_count - len(repetition_words)
         
         if remaining_slots > 0:
             # Получаем новые слова, которых нет в личном словаре пользователя
@@ -261,23 +269,32 @@ class WordService:
         return list(repetition_words)
     
     @staticmethod
-    async def get_training_words_by_morpheme(session: Session, user_id: int, morpheme_type: str) -> List[Word]:
+    async def get_training_words_by_morpheme(session: Session, user_id: int, morpheme_type: str, word_count: int = None) -> List[Word]:
         """
         Получает слова для тренировки по определенному типу морфемы
+        
+        Args:
+            session: сессия базы данных
+            user_id: ID пользователя
+            morpheme_type: тип морфемы
+            word_count: количество слов для тренировки (по умолчанию из config)
         """
+        if word_count is None:
+            word_count = WORDS_PER_TRAINING
+            
         # Получаем слова для повторения из личного словаря с фильтром по типу морфемы
         repetition_words_query = select(Word).join(UserWord).where(
             UserWord.user_id == user_id,
             UserWord.next_repetition <= func.now(),
             UserWord.is_learned == False,
             Word.morpheme_type == morpheme_type
-        ).limit(WORDS_PER_TRAINING // 2)
+        ).limit(word_count // 2)
         
         repetition_words = await session.execute(repetition_words_query)
         repetition_words = repetition_words.scalars().all()
         
         # Если слов для повторения мало, добавляем новые слова того же типа
-        remaining_slots = WORDS_PER_TRAINING - len(repetition_words)
+        remaining_slots = word_count - len(repetition_words)
         
         if remaining_slots > 0:
             # Получаем новые слова определенного типа, которых нет в личном словаре пользователя
@@ -296,18 +313,25 @@ class WordService:
         return list(repetition_words)
     
     @staticmethod
-    async def get_learned_words_by_morpheme(session: Session, user_id: int, morpheme_type: str) -> List[Word]:
+    async def get_learned_words_by_morpheme(session: Session, user_id: int, morpheme_type: str, word_count: int = None) -> List[Word]:
         """
         Получает ВЫУЧЕННЫЕ слова для повторения по определенному типу морфемы
+        
+        Args:
+            session: сессия базы данных
+            user_id: ID пользователя
+            morpheme_type: тип морфемы
+            word_count: количество слов для тренировки (по умолчанию из config)
         """
-        from config import WORDS_PER_TRAINING
+        if word_count is None:
+            word_count = WORDS_PER_TRAINING
         
         # Получаем выученные слова определенного типа морфемы
         learned_words_query = select(Word).join(UserWord).where(
             UserWord.user_id == user_id,
             UserWord.is_learned == True,  # ВЫУЧЕННЫЕ слова
             Word.morpheme_type == morpheme_type
-        ).order_by(func.random()).limit(WORDS_PER_TRAINING)
+        ).order_by(func.random()).limit(word_count)
         
         learned_words = await session.execute(learned_words_query)
         learned_words = learned_words.scalars().all()
@@ -315,17 +339,23 @@ class WordService:
         return list(learned_words)
     
     @staticmethod
-    async def get_all_learned_words(session: Session, user_id: int) -> List[Word]:
+    async def get_all_learned_words(session: Session, user_id: int, word_count: int = None) -> List[Word]:
         """
         Получает ВСЕ выученные слова для смешанной тренировки
+        
+        Args:
+            session: сессия базы данных
+            user_id: ID пользователя
+            word_count: количество слов для тренировки (по умолчанию из config)
         """
-        from config import WORDS_PER_TRAINING
+        if word_count is None:
+            word_count = WORDS_PER_TRAINING
         
         # Получаем все выученные слова пользователя
         learned_words_query = select(Word).join(UserWord).where(
             UserWord.user_id == user_id,
             UserWord.is_learned == True  # ВЫУЧЕННЫЕ слова
-        ).order_by(func.random()).limit(WORDS_PER_TRAINING)
+        ).order_by(func.random()).limit(word_count)
         
         learned_words = await session.execute(learned_words_query)
         learned_words = learned_words.scalars().all()
@@ -384,7 +414,7 @@ class WordService:
         Обновляет прогресс изучения слова
         Слово считается выученным при:
         1) Прохождении всех 7 интервалов повторения ИЛИ
-        2) После 10 правильных ответов в тренировках
+        2) После 5 правильных ответов в тренировках
         """
         from datetime import datetime, timedelta
         from config import REPETITION_INTERVALS
@@ -413,8 +443,8 @@ class WordService:
             user_word.current_interval_index = next_interval_index
             
             # Проверяем условия для пометки слова как выученного:
-            # 1) Прошли все интервалы ИЛИ 2) Дали 10 правильных ответов
-            if (next_interval_index == len(REPETITION_INTERVALS) - 1) or (user_word.correct_answers_count >= 10):
+            # 1) Прошли все интервалы ИЛИ 2) Дали 5 правильных ответов
+            if (next_interval_index == len(REPETITION_INTERVALS) - 1) or (user_word.correct_answers_count >= 5):
                 user_word.is_learned = True
                 
             user_word.next_repetition = datetime.utcnow() + timedelta(
