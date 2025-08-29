@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -15,6 +15,11 @@ class User(Base):
     last_name = Column(String(255))
     is_active = Column(Boolean, default=True)
     notifications_enabled = Column(Boolean, default=True)
+    experience_points = Column(Integer, default=0)  # Очки опыта
+    level = Column(Integer, default=1)  # Текущий уровень (1-25)
+    current_streak = Column(Integer, default=0)  # Текущий стрик дней подряд
+    best_streak = Column(Integer, default=0)  # Лучший стрик за все время
+    last_training_date = Column(Date)  # Дата последней завершенной тренировки
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Связи

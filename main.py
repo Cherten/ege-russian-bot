@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from config import BOT_TOKEN, NOTIFICATION_HOURS
 from database.database import init_db, get_session
-from handlers import training_handler, basic_handlers, admin_handler
+from handlers import training_handler, basic_handlers, admin_handler, stats_handler
 from services.notification_service import NotificationService
 
 # Настройка логирования
@@ -46,8 +46,9 @@ def get_main_keyboard():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎯 Начать тренировку")],
-            [KeyboardButton(text="📚 Мой словарь"), KeyboardButton(text="📊 Статистика")],
-            [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="❓ Помощь")]
+            [KeyboardButton(text="📚 Мой словарь"), KeyboardButton(text="📊 Моя статистика")],
+            [KeyboardButton(text="🏆 Рейтинг"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="❓ Помощь")]
         ],
         resize_keyboard=True,
         persistent=True
@@ -115,6 +116,7 @@ async def main():
     dp.include_router(basic_handlers.router)
     dp.include_router(training_handler.router)
     dp.include_router(admin_handler.router)
+    dp.include_router(stats_handler.router)
     
     # Регистрация функций startup и shutdown
     dp.startup.register(startup)
