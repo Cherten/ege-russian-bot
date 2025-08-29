@@ -7,6 +7,8 @@ from sqlalchemy import select, func
 from database.database import get_session
 from database.models import User, Word, TrainingSession, TrainingAnswer
 from services.word_service import WordService
+from services.support_phrases_service import support_phrases_service
+from services.leveling_service import leveling_service
 from typing import Dict, List
 from aiogram.filters import Command
 from config import MORPHEME_TYPES
@@ -37,27 +39,126 @@ async def start_training(message: Message, state: FSMContext):
             await message.answer("❌ Пользователь не найден. Используйте /start для регистрации.")
             return
         
-        # Создаем клавиатуру выбора типа морфемы
+        # Создаем клавиатуру выбора типа тренировки
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🌿 {MORPHEME_TYPES['roots']}", callback_data="training_roots")],
-            [InlineKeyboardButton(text=f"🔤 {MORPHEME_TYPES['prefixes']}", callback_data="training_prefixes")],
-            [InlineKeyboardButton(text=f"🔚 {MORPHEME_TYPES['endings']}", callback_data="training_endings")],
-            [InlineKeyboardButton(text=f"✍️ {MORPHEME_TYPES['spelling']}", callback_data="training_spelling")],
-            [InlineKeyboardButton(text=f"📝 {MORPHEME_TYPES['n_nn']}", callback_data="training_n_nn")],
-            [InlineKeyboardButton(text=f"🔧 {MORPHEME_TYPES['suffix']}", callback_data="training_suffix")],
-            [InlineKeyboardButton(text=f"🎵 {MORPHEME_TYPES['stress']}", callback_data="training_stress")],
-            [InlineKeyboardButton(text=f"🚫 {MORPHEME_TYPES['ne_particle']}", callback_data="training_ne_particle")],
-            [InlineKeyboardButton(text="🎲 Смешанная тренировка", callback_data="training_mixed")]
+            [InlineKeyboardButton(text="⚡ Быстрая тренировка (25 слов)", callback_data="quick_training")],
+            [InlineKeyboardButton(text="⚙️ Тонкая настройка", callback_data="custom_training")]
         ])
         
         await message.answer(
             "🎯 <b>Выбор типа тренировки</b>\n\n"
-            "Выберите, какой тип морфемы вы хотите изучать:",
+            "⚡ <b>Быстрая тренировка</b> - смешанная тренировка на 25 слов\n"
+            "⚙️ <b>Тонкая настройка</b> - выбор количества слов, типа морфем и режима\n\n"
+            "Что предпочитаете?",
             parse_mode="HTML",
             reply_markup=keyboard
         )
         
         await state.set_state(TrainingStates.choosing_morpheme_type)
+
+@router.callback_query(F.data == "quick_training")
+async def process_quick_training(callback: CallbackQuery, state: FSMContext):
+    """Запускает быструю тренировку (25 слов, смешанная)"""
+    user_id = callback.from_user.id
+    
+    async for session in get_session():
+        # Получаем пользователя
+        user_query = select(User).where(User.telegram_id == user_id)
+        user_result = await session.execute(user_query)
+        user = user_result.scalar_one_or_none()
+        
+        if not user:
+            await callback.answer("❌ Пользователь не найден.")
+            return
+        
+        # Получаем слова для смешанной тренировки (25 слов)
+        words = await WordService.get_training_words(session, user.id, 25)
+        training_type_name = "Быстрая тренировка (смешанная)"
+        
+        if not words:
+            await callback.message.edit_text(
+                "📚 Нет доступных слов для тренировки.\n"
+                "Попросите администратора добавить слова.",
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+        
+        # Создаем сессию тренировки
+        training_session = TrainingSession(
+            user_id=user.id,
+            session_type='quick_training_mixed',
+            words_total=len(words)
+        )
+        session.add(training_session)
+        await session.commit()
+        await session.refresh(training_session)
+        
+        # Подготавливаем данные тренировки
+        training_data[user_id] = {
+            'words': words,
+            'current_word_index': 0,
+            'correct_answers': 0,
+            'incorrect_words': [],
+            'answers': [],
+            'training_type_name': training_type_name,
+            'session_id': training_session.id
+        }
+        
+        await send_next_word_callback(callback, user_id, state)
+
+@router.callback_query(F.data == "custom_training")
+async def process_custom_training(callback: CallbackQuery, state: FSMContext):
+    """Переходит к тонкой настройке тренировки"""
+    # Создаем клавиатуру выбора количества слов
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡ Быстрая (10 слов)", callback_data="word_count_10")],
+        [InlineKeyboardButton(text="📚 Стандартная (25 слов)", callback_data="word_count_25")],
+        [InlineKeyboardButton(text="🔥 Колоссальная (50 слов)", callback_data="word_count_50")]
+    ])
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Тонкая настройка - Выбор количества слов</b>\n\n"
+        "⚡ <b>Быстрая (10 слов)</b> - для занятых людей\n"
+        "📚 <b>Стандартная (25 слов)</b> - оптимальная нагрузка\n"
+        "🔥 <b>Колоссальная (50 слов)</b> - для суперактивных\n\n"
+        "Выберите подходящий размер:",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("word_count_"))
+async def process_word_count_choice(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора количества слов"""
+    word_count = int(callback.data.replace("word_count_", ""))
+    
+    # Сохраняем выбранное количество слов в состояние
+    await state.update_data(word_count=word_count)
+    
+    # Показываем выбор типа тренировки
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🌿 {MORPHEME_TYPES['roots']}", callback_data="training_roots")],
+        [InlineKeyboardButton(text=f"🔤 {MORPHEME_TYPES['prefixes']}", callback_data="training_prefixes")],
+        [InlineKeyboardButton(text=f"🔚 {MORPHEME_TYPES['endings']}", callback_data="training_endings")],
+        [InlineKeyboardButton(text=f"✍️ {MORPHEME_TYPES['spelling']}", callback_data="training_spelling")],
+        [InlineKeyboardButton(text=f"📝 {MORPHEME_TYPES['n_nn']}", callback_data="training_n_nn")],
+        [InlineKeyboardButton(text=f"🔤 {MORPHEME_TYPES['suffix']}", callback_data="training_suffix")],
+        [InlineKeyboardButton(text=f"🎵 {MORPHEME_TYPES['stress']}", callback_data="training_stress")],
+        [InlineKeyboardButton(text=f"🚫 {MORPHEME_TYPES['ne_particle']}", callback_data="training_ne_particle")],
+        [InlineKeyboardButton(text="🌈 Смешанная тренировка", callback_data="training_mixed")]
+    ])
+    
+    count_text = {10: "⚡ Быстрая", 25: "📚 Стандартная", 50: "🔥 Колоссальная"}
+    
+    await callback.message.edit_text(
+        f"✅ Выбрано: {count_text.get(word_count, str(word_count))} ({word_count} слов)\n\n"
+        f"🎯 <b>Выбор типа тренировки</b>\n\n"
+        f"Выберите тип слов для тренировки или смешанную тренировку:",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("training_"))
 async def process_morpheme_choice(callback: CallbackQuery, state: FSMContext):
@@ -75,12 +176,16 @@ async def process_morpheme_choice(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Пользователь не найден.")
             return
         
+        # Получаем выбранное количество слов из состояния
+        user_data = await state.get_data()
+        word_count = user_data.get('word_count', 25)  # по умолчанию 25
+        
         # Получаем слова для тренировки в зависимости от выбранного типа
         if morpheme_type == "mixed":
-            words = await WordService.get_training_words(session, user.id)
+            words = await WordService.get_training_words(session, user.id, word_count)
             training_type_name = "Смешанная тренировка"
         else:
-            words = await WordService.get_training_words_by_morpheme(session, user.id, morpheme_type)
+            words = await WordService.get_training_words_by_morpheme(session, user.id, morpheme_type, word_count)
             training_type_name = MORPHEME_TYPES.get(morpheme_type, "Неизвестный тип")
         
         if not words:
@@ -386,13 +491,43 @@ async def process_answer(message: Message, state: FSMContext):
     
     if is_correct:
         data['correct_answers'] += 1
-        await message.answer("✅ Правильно!")
+        
+        # Начисляем опыт за правильный ответ
+        async for session in get_session():
+            user_query = select(User).where(User.telegram_id == user_id)
+            user_result = await session.execute(user_query)
+            user = user_result.scalar_one_or_none()
+            
+            if user:
+                # Рассчитываем награду опыта
+                difficulty = getattr(current_word, 'difficulty_level', 1)
+                streak = data['correct_answers'] - 1  # Текущая серия правильных ответов
+                experience_reward = leveling_service.calculate_experience_reward(difficulty, streak)
+                
+                # Добавляем опыт и проверяем повышение уровня
+                level_up, new_level = await leveling_service.add_experience(session, user, experience_reward)
+                
+                # Уведомление о повышении уровня
+                if level_up:
+                    level_name = leveling_service.get_level_name(new_level)
+                    await message.answer(
+                        f"🎉 <b>Поздравляем!</b>\n\n"
+                        f"🆙 Вы достигли нового уровня!\n"
+                        f"🏆 <b>Уровень {new_level}:</b> {level_name}\n"
+                        f"⭐ +{experience_reward} опыта",
+                        parse_mode="HTML"
+                    )
     else:
         data['incorrect_words'].append(current_word)
         await message.answer(f"❌ Неправильно. Правильный ответ: <b>{correct_answer}</b>", parse_mode="HTML")
     
     # Переходим к следующему слову
     data['current_word_index'] += 1
+    
+    # Проверяем, нужно ли показать поддерживающую фразу (каждые 3 слова и только после правильного ответа)
+    if is_correct and support_phrases_service.should_show_support_phrase(data['current_word_index']):
+        support_message = support_phrases_service.get_support_message()
+        await message.answer(support_message)
     
     await send_next_word(message, user_id, state)
 

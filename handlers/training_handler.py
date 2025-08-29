@@ -6,6 +6,8 @@ from sqlalchemy import select
 from database.database import get_session
 from database.models import User, TrainingSession, TrainingAnswer
 from services.word_service import WordService
+from services.support_phrases_service import support_phrases_service
+from services.leveling_service import leveling_service
 from typing import Dict, List
 from aiogram.filters import Command
 from config import MORPHEME_TYPES
@@ -38,25 +40,129 @@ async def start_training(message: Message, state: FSMContext):
         
         # Создаем клавиатуру выбора типа тренировки
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Новые слова и повторение", callback_data="training_mode_new")],
-            [InlineKeyboardButton(text="🏆 Повторение выученных слов", callback_data="training_mode_learned")]
+            [InlineKeyboardButton(text="⚡ Быстрая тренировка (25 слов)", callback_data="quick_training")],
+            [InlineKeyboardButton(text="⚙️ Тонкая настройка", callback_data="custom_training")]
         ])
         
         await message.answer(
-            "🎯 <b>Выбор режима тренировки</b>\n\n"
-            "📚 <b>Новые слова и повторение</b> - изучение новых слов и повторение не выученных\n"
-            "🏆 <b>Повторение выученных слов</b> - закрепление уже изученного материала\n\n"
-            "Выберите подходящий режим:",
+            "🎯 <b>Выбор типа тренировки</b>\n\n"
+            "⚡ <b>Быстрая тренировка</b> - смешанная тренировка на 25 слов\n"
+            "⚙️ <b>Тонкая настройка</b> - выбор количества слов, типа морфем и режима\n\n"
+            "Что предпочитаете?",
             parse_mode="HTML",
             reply_markup=keyboard
         )
         
         await state.set_state(TrainingStates.choosing_morpheme_type)
 
+@router.callback_query(F.data == "quick_training")
+async def process_quick_training(callback: CallbackQuery, state: FSMContext):
+    """Запускает быструю тренировку (25 слов, смешанная)"""
+    user_id = callback.from_user.id
+    
+    async for session in get_session():
+        # Получаем пользователя
+        user_query = select(User).where(User.telegram_id == user_id)
+        user_result = await session.execute(user_query)
+        user = user_result.scalar_one_or_none()
+        
+        if not user:
+            await callback.answer("❌ Пользователь не найден.")
+            return
+        
+        # Получаем слова для смешанной тренировки (25 слов)
+        words = await WordService.get_training_words(session, user.id, 25)
+        training_type_name = "Быстрая тренировка (смешанная)"
+        
+        if not words:
+            await callback.message.edit_text(
+                "📚 Нет доступных слов для тренировки.\n"
+                "Попросите администратора добавить слова.",
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+        
+        # Создаем сессию тренировки
+        session_type = 'quick_training_mixed'
+        training_session = TrainingSession(
+            user_id=user.id,
+            session_type=session_type,
+            words_total=len(words)
+        )
+        session.add(training_session)
+        await session.commit()
+        await session.refresh(training_session)
+        
+        # Подготавливаем данные тренировки
+        training_data[user_id] = {
+            'words': words,
+            'current_word_index': 0,
+            'correct_answers': 0,
+            'incorrect_words': [],
+            'answers': [],
+            'training_type_name': training_type_name,
+            'session_id': training_session.id
+        }
+        
+        await send_next_word_callback(callback, user_id, state)
+
+@router.callback_query(F.data == "custom_training")
+async def process_custom_training(callback: CallbackQuery, state: FSMContext):
+    """Переходит к тонкой настройке тренировки"""
+    # Создаем клавиатуру выбора количества слов
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡ Быстрая (10 слов)", callback_data="word_count_10")],
+        [InlineKeyboardButton(text="📚 Стандартная (25 слов)", callback_data="word_count_25")],
+        [InlineKeyboardButton(text="🔥 Колоссальная (50 слов)", callback_data="word_count_50")]
+    ])
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Тонкая настройка - Выбор количества слов</b>\n\n"
+        "⚡ <b>Быстрая (10 слов)</b> - для занятых людей\n"
+        "📚 <b>Стандартная (25 слов)</b> - оптимальная нагрузка\n"
+        "🔥 <b>Колоссальная (50 слов)</b> - для суперактивных\n\n"
+        "Выберите подходящий размер:",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("word_count_"))
+async def process_word_count_choice(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора количества слов"""
+    word_count = int(callback.data.replace("word_count_", ""))
+    
+    # Сохраняем выбранное количество слов в состояние
+    await state.update_data(word_count=word_count)
+    
+    # Показываем выбор режима тренировки
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📚 Новые слова и повторение", callback_data="training_mode_new")],
+        [InlineKeyboardButton(text="🏆 Повторение выученных слов", callback_data="training_mode_learned")]
+    ])
+    
+    count_text = {10: "⚡ Быстрая", 25: "📚 Стандартная", 50: "🔥 Колоссальная"}
+    
+    await callback.message.edit_text(
+        f"✅ Выбрано: {count_text.get(word_count, str(word_count))} ({word_count} слов)\n\n"
+        f"🎯 <b>Выбор режима тренировки</b>\n\n"
+        f"📚 <b>Новые слова и повторение</b> - изучение новых слов и повторение не выученных\n"
+        f"🏆 <b>Повторение выученных слов</b> - закрепление уже изученного материала\n\n"
+        f"Выберите подходящий режим:",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
 @router.callback_query(F.data.startswith("training_mode_"))
 async def process_training_mode(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора режима тренировки"""
     mode = callback.data.replace("training_mode_", "")
+    
+    # Получаем выбранное количество слов из состояния
+    user_data = await state.get_data()
+    word_count = user_data.get('word_count', 25)  # по умолчанию 25
     
     if mode == "new":
         # Меню для тренировки новых слов и повторений
@@ -155,21 +261,25 @@ async def process_morpheme_choice(callback: CallbackQuery, state: FSMContext):
             return
         
         # Получаем слова для тренировки в зависимости от режима и типа
+        # Получаем выбранное количество слов из состояния
+        user_data = await state.get_data()
+        word_count = user_data.get('word_count', 25)  # по умолчанию 25
+        
         if training_mode == "learned":
             # Тренировка выученных слов
             if morpheme_type == "mixed":
-                words = await WordService.get_all_learned_words(session, user.id)
+                words = await WordService.get_all_learned_words(session, user.id, word_count)
                 training_type_name = "Повторение всех выученных слов"
             else:
-                words = await WordService.get_learned_words_by_morpheme(session, user.id, morpheme_type)
+                words = await WordService.get_learned_words_by_morpheme(session, user.id, morpheme_type, word_count)
                 training_type_name = f"Повторение выученных: {MORPHEME_TYPES.get(morpheme_type, 'Неизвестный тип')}"
         else:
             # Обычная тренировка (новые слова и повторения)
             if morpheme_type == "mixed":
-                words = await WordService.get_training_words(session, user.id)
+                words = await WordService.get_training_words(session, user.id, word_count)
                 training_type_name = "Смешанная тренировка"
             else:
-                words = await WordService.get_training_words_by_morpheme(session, user.id, morpheme_type)
+                words = await WordService.get_training_words_by_morpheme(session, user.id, morpheme_type, word_count)
                 training_type_name = MORPHEME_TYPES.get(morpheme_type, "Неизвестный тип")
         
         if not words:
@@ -179,7 +289,7 @@ async def process_morpheme_choice(callback: CallbackQuery, state: FSMContext):
                     f"💡 Сначала выучите слова в обычных тренировках!\n"
                     f"Слово считается выученным после:\n"
                     f"• 7 интервалов повторений ИЛИ\n"
-                    f"• 10 правильных ответов в тренировках",
+                    f"• 5 правильных ответов в тренировках",
                     parse_mode="HTML"
                 )
             else:
@@ -487,13 +597,43 @@ async def process_answer(message: Message, state: FSMContext):
     
     if is_correct:
         data['correct_answers'] += 1
-        await message.answer("✅ Правильно!")
+        
+        # Начисляем опыт за правильный ответ
+        async for session in get_session():
+            user_query = select(User).where(User.telegram_id == user_id)
+            user_result = await session.execute(user_query)
+            user = user_result.scalar_one_or_none()
+            
+            if user:
+                # Рассчитываем награду опыта
+                difficulty = getattr(current_word, 'difficulty_level', 1)
+                streak = data['correct_answers'] - 1  # Текущая серия правильных ответов
+                experience_reward = leveling_service.calculate_experience_reward(difficulty, streak)
+                
+                # Добавляем опыт и проверяем повышение уровня
+                level_up, new_level = await leveling_service.add_experience(session, user, experience_reward)
+                
+                # Уведомление о повышении уровня
+                if level_up:
+                    level_name = leveling_service.get_level_name(new_level)
+                    await message.answer(
+                        f"🎉 <b>Поздравляем!</b>\n\n"
+                        f"🆙 Вы достигли нового уровня!\n"
+                        f"🏆 <b>Уровень {new_level}:</b> {level_name}\n"
+                        f"⭐ +{experience_reward} опыта",
+                        parse_mode="HTML"
+                    )
     else:
         data['incorrect_words'].append(current_word)
         await message.answer(f"❌ Неправильно. Правильный ответ: <b>{correct_answer}</b>", parse_mode="HTML")
     
     # Переходим к следующему слову
     data['current_word_index'] += 1
+    
+    # Проверяем, нужно ли показать поддерживающую фразу (каждые 3 слова и только после правильного ответа)
+    if is_correct and support_phrases_service.should_show_support_phrase(data['current_word_index']):
+        support_message = support_phrases_service.get_support_message()
+        await message.answer(support_message)
     
     await send_next_word(message, user_id, state)
 
@@ -503,6 +643,8 @@ async def finish_training(message: Message, user_id: int):
         return
     
     data = training_data[user_id]
+    new_streak = 0
+    is_new_record = False
     
     async for session in get_session():
         # Обновляем сессию тренировки
@@ -533,25 +675,38 @@ async def finish_training(message: Message, user_id: int):
                     answer_data['is_correct']
                 )
         
-        # Добавляем неправильные слова в личный словарь только для обычных тренировок
+        # Получаем пользователя и добавляем неправильные слова в личный словарь
+        user_query = select(User).where(User.telegram_id == user_id)
+        user_result = await session.execute(user_query)
+        user = user_result.scalar_one()
+        
         if data.get('training_mode', 'new') != 'learned' and data['incorrect_words']:
-            user_query = select(User).where(User.telegram_id == user_id)
-            user_result = await session.execute(user_query)
-            user = user_result.scalar_one()
-            
             for incorrect_word in data['incorrect_words']:
                 await WordService.add_word_to_user_dictionary(session, user.id, incorrect_word.id)
+        
+        # Обновляем стрик пользователя
+        new_streak, is_new_record = await leveling_service.update_streak(session, user)
         
         await session.commit()
     
     # Формируем результат тренировки
     accuracy = (data['correct_answers'] / len(data['words'])) * 100
     
+    # Формируем текст о стрике
+    streak_text = ""
+    if new_streak == 1:
+        streak_text = f"🔥 <b>Начинаем стрик!</b> День 1 подряд с тренировками!\n"
+    elif is_new_record:
+        streak_text = f"🎉 <b>Новый рекорд!</b> Стрик: {new_streak} дн. подряд! 🏆\n"
+    elif new_streak > 1:
+        streak_text = f"🔥 <b>Стрик продолжается!</b> {new_streak} дн. подряд!\n"
+    
     result_text = (
         f"🎉 <b>Тренировка '{data['training_type_name']}' завершена!</b>\n\n"
         f"📊 <b>Результаты:</b>\n"
         f"✅ Правильно: <b>{data['correct_answers']}</b> из <b>{len(data['words'])}</b>\n"
         f"📈 Точность: <b>{accuracy:.1f}%</b>\n\n"
+        f"{streak_text}"
     )
     
     if data.get('training_mode', 'new') == 'learned':
@@ -612,6 +767,8 @@ async def finish_training_callback(callback: CallbackQuery, user_id: int):
         return
     
     data = training_data[user_id]
+    new_streak = 0
+    is_new_record = False
     
     async for session in get_session():
         # Обновляем сессию тренировки
@@ -642,25 +799,38 @@ async def finish_training_callback(callback: CallbackQuery, user_id: int):
                     answer_data['is_correct']
                 )
         
-        # Добавляем неправильные слова в личный словарь только для обычных тренировок
+        # Получаем пользователя и добавляем неправильные слова в личный словарь
+        user_query = select(User).where(User.telegram_id == user_id)
+        user_result = await session.execute(user_query)
+        user = user_result.scalar_one()
+        
         if data.get('training_mode', 'new') != 'learned' and data['incorrect_words']:
-            user_query = select(User).where(User.telegram_id == user_id)
-            user_result = await session.execute(user_query)
-            user = user_result.scalar_one()
-            
             for incorrect_word in data['incorrect_words']:
                 await WordService.add_word_to_user_dictionary(session, user.id, incorrect_word.id)
+        
+        # Обновляем стрик пользователя
+        new_streak, is_new_record = await leveling_service.update_streak(session, user)
         
         await session.commit()
     
     # Формируем результат тренировки
     accuracy = (data['correct_answers'] / len(data['words'])) * 100
     
+    # Формируем текст о стрике
+    streak_text = ""
+    if new_streak == 1:
+        streak_text = f"🔥 <b>Начинаем стрик!</b> День 1 подряд с тренировками!\n"
+    elif is_new_record:
+        streak_text = f"🎉 <b>Новый рекорд!</b> Стрик: {new_streak} дн. подряд! 🏆\n"
+    elif new_streak > 1:
+        streak_text = f"🔥 <b>Стрик продолжается!</b> {new_streak} дн. подряд!\n"
+    
     result_text = (
         f"🎉 <b>Тренировка '{data['training_type_name']}' завершена!</b>\n\n"
         f"📊 <b>Результаты:</b>\n"
         f"✅ Правильно: <b>{data['correct_answers']}</b> из <b>{len(data['words'])}</b>\n"
         f"📈 Точность: <b>{accuracy:.1f}%</b>\n\n"
+        f"{streak_text}"
     )
     
     if data['incorrect_words']:
